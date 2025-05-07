@@ -1,0 +1,6 @@
+path: /home/cielo/Workspace/robotics/parking-management-system (1)/parking-management-system/dataset-new
+train: /home/cielo/Workspace/robotics/parking-management-system (1)/parking-management-system/dataset-new/train/images
+val: /home/cielo/Workspace/robotics/parking-management-system (1)/parking-management-system/dataset-new/val/images
+
+names:
+  0: license_plate

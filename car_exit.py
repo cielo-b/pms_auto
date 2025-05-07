@@ -10,7 +10,7 @@ from collections import Counter
 import random
 
 # Load YOLOv8 model (same model as entry)
-model = YOLO('/opt/homebrew/runs/detect/train4/weights/best.pt')
+model = YOLO('./best.pt')
 
 # CSV log file
 csv_file = 'plates_log.csv'

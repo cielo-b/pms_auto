@@ -1,0 +1,44 @@
+# Dataset paths
+path: /home/cielo/Workspace/robotics/parking-management-system (1)/parking-management-system/dataset-new
+train: train/images
+val: val/images
+test: test/images
+
+# Class names
+names:
+  0: license_plate
+
+# License plate-specific augmentations
+augment:
+  # Color adjustments
+  hsv_h: 0.05 # Hue variation (helps with different lighting)
+  hsv_s: 0.5 # Saturation variation
+  hsv_v: 0.4 # Value variation
+
+  # Geometric transforms
+  degrees: 15.0 # Rotation (-15 to +15 degrees)
+  translate: 0.2 # Translation (±20%)
+  scale: 0.3 # Scale (±30%)
+  shear: 5.0 # Shear (±5 degrees)
+
+  # Perspective
+  perspective: 0.001 # Small perspective changes
+
+  # Flip
+  fliplr: 0.3 # Horizontal flip (30% probability)
+  flipud: 0.01 # Rare vertical flip
+
+  # Advanced augmentations
+  mosaic: 1.0 # Always use mosaic
+  mixup: 0.2 # 20% mixup probability
+  copy_paste: 0.2 # 20% copy-paste probability
+
+  # Plate-specific
+  erasing: 0.1 # Random erasing
+  cutout: 8 # Number of cutout holes
+  cutout_fill: 0.5 # Fill value for cutout
+
+# Training parameters
+nc: 1 # Number of classes
+depth_multiple: 1.0
+width_multiple: 1.0
