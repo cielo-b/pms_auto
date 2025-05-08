@@ -11,7 +11,7 @@ class RFIDManager:
     def __init__(self):
         self.arduino = self.connect_arduino()
         self.parking_rate = 200  # 200 per hour
-        self.parking_log = "parking_transactions.csv"
+        self.parking_log = "./database/parking_transactions.csv"
         self.initialize_log()
 
     def initialize_log(self):

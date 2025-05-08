@@ -29,10 +29,12 @@ void loop() {
 
 void checkForSerialCommand() {
   while (Serial.available()) {
+     Serial.print(Serial.readStringUntil('\n'));
     char received = Serial.read();
+    Serial.print(received);
     if (received == '\n') {
       incomingData.trim();
-      if (incomingData == "GRANT") {
+      if (incomingData == "1") {
         Serial.print(incomingData);
         grantAccess();
       } else if (incomingData == "DENY") {

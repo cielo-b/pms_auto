@@ -14,7 +14,7 @@ import random
 CONFIG = {
     "model_path": "./best.pt",
     "save_dir": "plates",
-    "csv_file": "plates_log.csv",
+    "csv_file": "./database/plates_log.csv",
     "arduino_baudrate": 9600,
     "ultrasonic_threshold": 50,  # cm
     "plate_buffer_size": 3,
@@ -196,9 +196,10 @@ def main():
 
                                 # Check cooldown
                                 if (
-                                    most_common != last_saved_plate
-                                    or (current_time - last_entry_time)
-                                    > CONFIG["entry_cooldown"]
+                                    # most_common != last_saved_plate
+                                    # or (current_time - last_entry_time)
+                                    # > CONFIG["entry_cooldown"]
+                                    1==1
                                 ):
                                     # Log to CSV
                                     with open(CONFIG["csv_file"], "a", newline="") as f:
