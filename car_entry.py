@@ -42,7 +42,7 @@ def initialize_system():
     if not os.path.exists(CONFIG["csv_file"]):
         with open(CONFIG["csv_file"], "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["Plate Number", "Payment Status", "Timestamp"])
+            writer.writerow(["Plate Number", "Payment Status", "In time", "Out time"])
 
     return model
 
@@ -68,25 +68,15 @@ def connect_arduino():
 # ===== Image Processing =====
 def preprocess_plate_image(plate_img):
     """Optimized plate image preprocessing"""
-    # Convert to grayscale
     gray = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
-
-    # Apply CLAHE for better contrast
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
-
-    # Denoising
     denoised = cv2.fastNlMeansDenoising(enhanced, h=10)
-
-    # Adaptive thresholding
     thresh = cv2.adaptiveThreshold(
         denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
     )
-
-    # Optional: Morphological operations to clean up image
     kernel = np.ones((1, 1), np.uint8)
     processed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-
     return processed
 
 
@@ -99,8 +89,6 @@ def extract_plate_text(processed_img):
             .strip()
             .replace(" ", "")
         )
-
-        # Additional processing to improve accuracy
         plate_text = "".join(c for c in plate_text if c.isalnum())
         return plate_text.upper()
     except Exception as e:
@@ -113,25 +101,17 @@ def validate_plate(plate_text):
     """Validate plate format"""
     if not plate_text:
         return None
-
-    # Check for required prefix
     if CONFIG["plate_format"]["required_prefix"] not in plate_text:
         return None
-
     start_idx = plate_text.find(CONFIG["plate_format"]["required_prefix"])
     plate_candidate = plate_text[start_idx:]
-
-    # Check minimum length
     min_length = (
         CONFIG["plate_format"]["prefix_len"]
         + CONFIG["plate_format"]["digits_len"]
         + CONFIG["plate_format"]["suffix_len"]
     )
-
     if len(plate_candidate) < min_length:
         return None
-
-    # Extract parts
     prefix = plate_candidate[: CONFIG["plate_format"]["prefix_len"]]
     digits = plate_candidate[
         CONFIG["plate_format"]["prefix_len"] : CONFIG["plate_format"]["prefix_len"]
@@ -143,8 +123,6 @@ def validate_plate(plate_text):
         + CONFIG["plate_format"]["digits_len"]
         + CONFIG["plate_format"]["suffix_len"]
     ]
-
-    # Validate format
     if (
         prefix.isalpha()
         and prefix.isupper()
@@ -153,7 +131,6 @@ def validate_plate(plate_text):
         and suffix.isupper()
     ):
         return f"{prefix}{digits}{suffix}"
-
     return None
 
 
@@ -170,7 +147,6 @@ def main():
         print("[ERROR] Could not open video capture")
         return
 
-    # Set camera resolution for better performance
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
@@ -189,42 +165,31 @@ def main():
 
             # Simulate ultrasonic sensor
             distance = random.choice([random.randint(10, 40), random.randint(60, 150)])
-            print(f"[SENSOR] Distance: {distance} cm")
+            # print(f"[SENSOR] Distance: {distance} cm")
 
             if distance <= CONFIG["ultrasonic_threshold"]:
-                # Start timer for performance measurement
-                start_time = time.time()
-
                 # Run YOLO detection
-                results = model(
-                    frame, verbose=False
-                )  # Disable verbose output for cleaner logs
+                start_time = time.time()
+                results = model(frame, verbose=False)
                 detection_time = time.time() - start_time
-                print(f"[PERF] Detection time: {detection_time:.2f}s")
+                # print(f"[PERF] Detection time: {detection_time:.2f}s")
 
                 if len(results[0].boxes) > 0:
                     for box in results[0].boxes:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         plate_img = frame[y1:y2, x1:x2]
-
-                        # Process plate image
                         processed_img = preprocess_plate_image(plate_img)
-
-                        # Extract plate text
                         plate_text = extract_plate_text(processed_img)
                         print(f"[OCR] Raw text: {plate_text}")
 
-                        # Validate plate
                         valid_plate = validate_plate(plate_text)
                         if valid_plate:
                             print(f"[VALID] Plate detected: {valid_plate}")
                             plate_buffer.append(valid_plate)
 
-                            # Show processed images
                             cv2.imshow("Plate", plate_img)
                             cv2.imshow("Processed", processed_img)
 
-                            # Check if we have enough detections
                             if len(plate_buffer) >= CONFIG["plate_buffer_size"]:
                                 most_common = Counter(plate_buffer).most_common(1)[0][0]
                                 current_time = time.time()
@@ -235,18 +200,18 @@ def main():
                                     or (current_time - last_entry_time)
                                     > CONFIG["entry_cooldown"]
                                 ):
-
                                     # Log to CSV
                                     with open(CONFIG["csv_file"], "a", newline="") as f:
                                         writer = csv.writer(f)
                                         writer.writerow(
                                             [
                                                 most_common,
-                                                0,  # Payment status
+                                                "0",  # Payment Status
                                                 time.strftime("%Y-%m-%d %H:%M:%S"),
+                                                "",
                                             ]
                                         )
-                                    print(f"[SAVED] {most_common} logged to CSV")
+                                    print(f"[SAVED] Plate: {most_common} logged to CSV")
 
                                     # Control gate
                                     if arduino:
@@ -265,7 +230,6 @@ def main():
 
                                 plate_buffer.clear()
 
-                # Display annotated frame
                 annotated_frame = results[0].plot()
                 cv2.putText(
                     annotated_frame,
