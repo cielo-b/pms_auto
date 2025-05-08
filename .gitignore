@@ -2,3 +2,6 @@
 /yolov8n
 /plates
 /dataset-new
+/__pycache__
+/.vscode
+/.qodo
