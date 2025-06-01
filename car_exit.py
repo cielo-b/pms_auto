@@ -46,7 +46,7 @@ def process_exit(plate_number):
 
     # Find the latest entry for this plate that hasn't exited
     for row in reversed(rows):
-        if row['Plate Number'] == plate_number and row['Payment Status'] == '1' and not row['Out time']:
+        if row['Plate Number'] == plate_number and row['Payment Status'] == '1':
             # Update exit time
             row['Out time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
