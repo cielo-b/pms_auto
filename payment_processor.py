@@ -9,7 +9,7 @@ class PaymentProcessor:
     def __init__(self):
         self.rfid = RFIDManager()
         self.cards_csv = "./database/cards.csv"
-        self.plates_csv = "plates_log.csv"  # From car_entry.py
+        self.plates_csv = "./database/plates_log.csv"  # From car_entry.py
         self.parking_rate = 200  # 200 per hour
         self.initialize_cards_csv()
 

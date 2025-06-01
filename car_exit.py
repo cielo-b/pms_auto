@@ -19,7 +19,7 @@ csv_file = './database/plates_log.csv'
 def detect_arduino_port():
     ports = list(serial.tools.list_ports.comports())
     for port in ports:
-        if "usbmodem" in port.device or "wchusbmodem" in port.device:
+        if "ttyUSB" in port.device or "ttyACM" in port.device:
             return port.device
     return None
 
