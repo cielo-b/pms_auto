@@ -6,10 +6,12 @@ import time
 import serial
 import serial.tools.list_ports
 import csv
-from collections import Counter
+from collections import Counter, deque
 import numpy as np
 import random
-from utils.data_handler import save_vehicle_entry, update_vehicle_exit
+from utils.data_handler import save_vehicle_entry, update_vehicle_exit, get_db_connection
+from sqlalchemy import text
+from datetime import datetime, timedelta
 
 # ===== Configuration =====
 CONFIG = {
@@ -136,17 +138,118 @@ def validate_plate(plate_text):
     return None
 
 
+# ===== Check for Unpaid Duplicate Plates =====
+def check_unpaid_duplicate(plate_number):
+    """Check if there's an unpaid entry for this plate number"""
+    try:
+        # Check CSV file
+        if os.path.exists(CONFIG["csv_file"]):
+            with open(CONFIG["csv_file"], "r") as f:
+                reader = csv.DictReader(f)
+                for row in reversed(list(reader)):
+                    if (row["Plate Number"] == plate_number and 
+                        row["Payment Status"] == "0" and 
+                        not row["Out time"]):
+                        return True
+
+        # Check database
+        engine = get_db_connection()
+        if engine is not None:
+            query = text("""
+                SELECT COUNT(*) 
+                FROM vehicle_logs 
+                WHERE plate_number = :plate_number 
+                AND status = 0 
+                AND out_time IS NULL
+            """)
+            with engine.connect() as conn:
+                result = conn.execute(query, {"plate_number": plate_number})
+                count = result.scalar()
+                return count > 0
+
+        return False
+    except Exception as e:
+        print(f"[ERROR] Failed to check for unpaid duplicates: {str(e)}")
+        return False
+
+
+# ===== Message Queue System =====
+class MessageQueue:
+    def __init__(self, max_messages=3, message_duration=5):
+        self.messages = deque(maxlen=max_messages)
+        self.message_duration = message_duration
+    
+    def add_message(self, message, color):
+        self.messages.append({
+            'message': message,
+            'color': color,
+            'timestamp': datetime.now()
+        })
+    
+    def get_active_messages(self):
+        current_time = datetime.now()
+        active_messages = []
+        for msg in self.messages:
+            if (current_time - msg['timestamp']).total_seconds() < self.message_duration:
+                active_messages.append(msg)
+        return active_messages
+
+
+# ===== Display Message on Frame =====
+def display_messages(frame, message_queue):
+    """Display multiple messages on the frame with background for better visibility"""
+    # Create a copy of the frame
+    display_frame = frame.copy()
+    
+    # Get frame dimensions
+    height, width = frame.shape[:2]
+    
+    # Get active messages
+    active_messages = message_queue.get_active_messages()
+    
+    # Display each message
+    for i, msg in enumerate(active_messages):
+        message = msg['message']
+        color = msg['color']
+        
+        # Calculate position for this message
+        text_size = cv2.getTextSize(message, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
+        text_x = (width - text_size[0]) // 2
+        text_y = height - 50 - (i * 60)  # Stack messages vertically
+        
+        # Draw background rectangle
+        cv2.rectangle(display_frame, 
+                     (text_x - 10, text_y - text_size[1] - 10),
+                     (text_x + text_size[0] + 10, text_y + 10),
+                     (0, 0, 0),
+                     -1)
+        
+        # Draw text
+        cv2.putText(display_frame,
+                    message,
+                    (text_x, text_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    color,
+                    2)
+    
+    return display_frame
+
+
 # ===== Main Loop =====
 def main():
     model = initialize_system()
     arduino = connect_arduino()
+    message_queue = MessageQueue(max_messages=3, message_duration=5)
 
     if not arduino:
         print("[WARNING] Running in simulation mode without Arduino")
+        message_queue.add_message("WARNING: Running in simulation mode", (255, 165, 0))
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("[ERROR] Could not open video capture")
+        message_queue.add_message("ERROR: Could not open video capture", (0, 0, 255))
         return
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -157,24 +260,24 @@ def main():
     last_entry_time = 0
 
     print("[SYSTEM] Ready. Press 'q' to exit.")
+    message_queue.add_message("System Ready", (0, 255, 0))
 
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
                 print("[WARNING] Frame capture failed")
+                message_queue.add_message("WARNING: Frame capture failed", (255, 165, 0))
                 break
 
             # Simulate ultrasonic sensor
             distance = random.choice([random.randint(10, 40), random.randint(60, 150)])
-            # print(f"[SENSOR] Distance: {distance} cm")
 
             if distance <= CONFIG["ultrasonic_threshold"]:
                 # Run YOLO detection
                 start_time = time.time()
                 results = model(frame, verbose=False)
                 detection_time = time.time() - start_time
-                # print(f"[PERF] Detection time: {detection_time:.2f}s")
 
                 if len(results[0].boxes) > 0:
                     for box in results[0].boxes:
@@ -188,6 +291,7 @@ def main():
                         if valid_plate:
                             print(f"[VALID] Plate detected: {valid_plate}")
                             plate_buffer.append(valid_plate)
+                            message_queue.add_message(f"Plate Detected: {valid_plate}", (0, 255, 255))
 
                             cv2.imshow("Plate", plate_img)
                             cv2.imshow("Processed", processed_img)
@@ -196,12 +300,26 @@ def main():
                                 most_common = Counter(plate_buffer).most_common(1)[0][0]
                                 current_time = time.time()
 
+                                # Check for unpaid duplicates
+                                if check_unpaid_duplicate(most_common):
+                                    print(f"[DENIED] Unpaid entry exists for plate: {most_common}")
+                                    message_queue.add_message(
+                                        f"DENIED: Unpaid entry exists for {most_common}",
+                                        (0, 0, 255)
+                                    )
+                                    if arduino:
+                                        arduino.write(b"2")
+                                        print("[ALERT] Buzzer triggered")
+                                        time.sleep(3)
+                                        arduino.write(b"0")
+                                    plate_buffer.clear()
+                                    continue
+
                                 # Check cooldown
                                 if (
-                                    # most_common != last_saved_plate
-                                    # or (current_time - last_entry_time)
-                                    # > CONFIG["entry_cooldown"]
-                                    1==1
+                                    most_common != last_saved_plate
+                                    or (current_time - last_entry_time)
+                                    > CONFIG["entry_cooldown"]
                                 ):
                                     # Log to CSV and Database
                                     current_time = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -210,37 +328,57 @@ def main():
                                         writer.writerow(
                                             [
                                                 most_common,
-                                                "0",  # Payment Status
+                                                "0",
                                                 current_time,
                                                 "",
                                             ]
                                         )
                                     print(f"[SAVED] Plate: {most_common} logged to CSV")
+                                    message_queue.add_message(
+                                        f"SAVED: {most_common} logged to CSV",
+                                        (0, 255, 0)
+                                    )
 
                                     # Log to database
                                     if save_vehicle_entry(most_common):
                                         print(f"[SAVED] Plate: {most_common} logged to database")
+                                        message_queue.add_message(
+                                            f"ACCESS GRANTED: {most_common}",
+                                            (0, 255, 0)
+                                        )
                                     else:
                                         print(f"[ERROR] Failed to log plate: {most_common} to database")
+                                        message_queue.add_message(
+                                            f"ERROR: Failed to log {most_common}",
+                                            (0, 0, 255)
+                                        )
 
                                     # Control gate
                                     if arduino:
                                         arduino.write(b"1")
                                         print("[GATE] Opening gate")
+                                        message_queue.add_message("GATE: Opening", (0, 255, 0))
                                         time.sleep(CONFIG["gate_open_duration"])
                                         arduino.write(b"0")
                                         print("[GATE] Closing gate")
+                                        message_queue.add_message("GATE: Closing", (0, 255, 0))
 
                                     last_saved_plate = most_common
                                     last_entry_time = current_time
                                 else:
-                                    print(
-                                        "[SKIPPED] Duplicate plate within cooldown period"
+                                    print("[SKIPPED] Duplicate plate within cooldown period")
+                                    message_queue.add_message(
+                                        f"SKIPPED: {most_common} within cooldown",
+                                        (255, 165, 0)
                                     )
 
                                 plate_buffer.clear()
 
                 annotated_frame = results[0].plot()
+                # Display all active messages
+                annotated_frame = display_messages(annotated_frame, message_queue)
+                
+                # Add detection time and system status
                 cv2.putText(
                     annotated_frame,
                     f"Detection: {detection_time:.2f}s",
@@ -250,8 +388,29 @@ def main():
                     (0, 255, 0),
                     2,
                 )
+                cv2.putText(
+                    annotated_frame,
+                    "System: ACTIVE",
+                    (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2,
+                )
             else:
                 annotated_frame = frame
+                # Display all active messages
+                annotated_frame = display_messages(annotated_frame, message_queue)
+                # Add system status
+                cv2.putText(
+                    annotated_frame,
+                    "System: WAITING",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (255, 165, 0),
+                    2,
+                )
 
             cv2.imshow("Webcam Feed", annotated_frame)
 
@@ -260,6 +419,7 @@ def main():
 
     except KeyboardInterrupt:
         print("\n[SYSTEM] Shutting down...")
+        message_queue.add_message("System Shutting Down", (255, 165, 0))
     finally:
         cap.release()
         if arduino:

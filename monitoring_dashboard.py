@@ -146,11 +146,10 @@ def calculate_duration(row):
     return None
 
 def main():
-    st.title("🚗 Parking System Monitor")
+    st.title("Parking System Monitor")
 
     # Sidebar
     with st.sidebar:
-        st.image("https://img.icons8.com/color/48/000000/car.png", width=48)
         st.header("Filters")
         with st.expander("Date & Refresh Settings", expanded=True):
             date_range = st.date_input(

@@ -69,7 +69,7 @@ class PaymentProcessor:
         self.rfid = RFIDSimulator()  # Using the simulator instead of real RFIDManager
         self.cards_csv = "./database/cards.csv"
         self.plates_csv = "./database/plates_log.csv"
-        self.parking_rate = 200  # 200 per hour
+        self.parking_rate = 500  # 500 per hour
         self.initialize_files()
         
     def initialize_files(self):

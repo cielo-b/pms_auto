@@ -6,10 +6,71 @@ import time
 import serial
 import serial.tools.list_ports
 import csv
-from collections import Counter
-from datetime import datetime
+from collections import Counter, deque
+from datetime import datetime, timedelta
 from utils.data_handler import get_db_connection, update_vehicle_exit, save_vehicle_entry
 from sqlalchemy import create_engine, text
+
+# ===== Message Queue System =====
+class MessageQueue:
+    def __init__(self, max_messages=3, message_duration=5):
+        self.messages = deque(maxlen=max_messages)
+        self.message_duration = message_duration
+    
+    def add_message(self, message, color):
+        self.messages.append({
+            'message': message,
+            'color': color,
+            'timestamp': datetime.now()
+        })
+    
+    def get_active_messages(self):
+        current_time = datetime.now()
+        active_messages = []
+        for msg in self.messages:
+            if (current_time - msg['timestamp']).total_seconds() < self.message_duration:
+                active_messages.append(msg)
+        return active_messages
+
+# ===== Display Message on Frame =====
+def display_messages(frame, message_queue):
+    """Display multiple messages on the frame with background for better visibility"""
+    # Create a copy of the frame
+    display_frame = frame.copy()
+    
+    # Get frame dimensions
+    height, width = frame.shape[:2]
+    
+    # Get active messages
+    active_messages = message_queue.get_active_messages()
+    
+    # Display each message
+    for i, msg in enumerate(active_messages):
+        message = msg['message']
+        color = msg['color']
+        
+        # Calculate position for this message
+        text_size = cv2.getTextSize(message, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
+        text_x = (width - text_size[0]) // 2
+        text_y = height - 50 - (i * 60)  # Stack messages vertically
+        
+        # Draw background rectangle
+        cv2.rectangle(display_frame, 
+                     (text_x - 10, text_y - text_size[1] - 10),
+                     (text_x + text_size[0] + 10, text_y + 10),
+                     (0, 0, 0),
+                     -1)
+        
+        # Draw text
+        cv2.putText(display_frame,
+                    message,
+                    (text_x, text_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    color,
+                    2)
+    
+    return display_frame
 
 # Load YOLOv8 model
 model = YOLO('./best.pt')
@@ -36,9 +97,10 @@ else:
     arduino = None
 
 # ===== Check payment status and update exit time =====
-def process_exit(plate_number):
+def process_exit(plate_number, message_queue):
     if not os.path.exists(authorized_csv):
         print("[ERROR] Log file does not exist.")
+        message_queue.add_message("ERROR: Log file does not exist", (0, 0, 255))
         return False
 
     # Read all rows
@@ -81,21 +143,26 @@ def process_exit(plate_number):
                         conn.commit()
                         if result.rowcount > 0:
                             print(f"[DATABASE] Exit time updated in database for {plate_number}")
+                            message_queue.add_message(f"EXIT GRANTED: {plate_number}", (0, 255, 0))
                         else:
                             print(f"[DATABASE] No matching record found for {plate_number}")
+                            message_queue.add_message(f"ERROR: No record found for {plate_number}", (0, 0, 255))
                 except Exception as e:
                     print(f"[DATABASE ERROR] Failed to update exit time: {str(e)}")
+                    message_queue.add_message("ERROR: Database update failed", (0, 0, 255))
             else:
                 print(f"[ERROR] Failed to connect to database for exit time update")
+                message_queue.add_message("ERROR: Database connection failed", (0, 0, 255))
             
             print(f"[SUCCESS] Exit time updated for {plate_number}")
             return True
 
     print(f"[ERROR] No valid entry found for {plate_number}")
+    message_queue.add_message(f"DENIED: No valid entry for {plate_number}", (0, 0, 255))
     return False
 
 # ===== Log unauthorized exit =====
-def log_unauthorized_exit(plate_number):
+def log_unauthorized_exit(plate_number, message_queue):
     # Create file if it doesn't exist
     if not os.path.exists(unauthorized_csv):
         with open(unauthorized_csv, 'w', newline='') as f:
@@ -124,22 +191,29 @@ def log_unauthorized_exit(plate_number):
                 })
                 conn.commit()
                 print(f"[DATABASE] Unauthorized exit logged in database for {plate_number}")
+                message_queue.add_message(f"SECURITY ALERT: Unauthorized exit logged for {plate_number}", (0, 0, 255))
         except Exception as e:
             print(f"[DATABASE ERROR] Failed to log unauthorized exit: {str(e)}")
+            message_queue.add_message("ERROR: Failed to log unauthorized exit", (0, 0, 255))
     else:
         print(f"[ERROR] Failed to connect to database for unauthorized exit logging")
+        message_queue.add_message("ERROR: Database connection failed", (0, 0, 255))
     
     print(f"[SECURITY ALERT] Unauthorized exit logged for {plate_number}")
 
 # ===== Webcam and Main Loop =====
 cap = cv2.VideoCapture(0)
 plate_buffer = []
+message_queue = MessageQueue(max_messages=3, message_duration=5)
 
 print("[EXIT SYSTEM] Ready. Press 'q' to quit.")
+message_queue.add_message("Exit System Ready", (0, 255, 0))
 
 while True:
     ret, frame = cap.read()
     if not ret:
+        print("[WARNING] Frame capture failed")
+        message_queue.add_message("WARNING: Frame capture failed", (255, 165, 0))
         break
 
     results = model(frame)
@@ -168,6 +242,7 @@ while True:
                     if (prefix.isalpha() and prefix.isupper() and
                         digits.isdigit() and suffix.isalpha() and suffix.isupper()):
                         print(f"[VALID] Plate Detected: {plate_candidate}")
+                        message_queue.add_message(f"Plate Detected: {plate_candidate}", (0, 255, 255))
                         plate_buffer.append(plate_candidate)
 
                         if len(plate_buffer) >= 3:
@@ -175,20 +250,23 @@ while True:
                             plate_buffer.clear()
 
                             # Process exit and update CSV
-                            if process_exit(most_common):
+                            if process_exit(most_common, message_queue):
                                 print(f"[ACCESS GRANTED] Processing exit for {most_common}")
                                 if arduino:
                                     arduino.write(b'1')  # Open gate
                                     print("[GATE] Opening gate (sent '1')")
+                                    message_queue.add_message("GATE: Opening", (0, 255, 0))
                                     time.sleep(15)
                                     arduino.write(b'0')  # Close gate
                                     print("[GATE] Closing gate (sent '0')")
+                                    message_queue.add_message("GATE: Closing", (0, 255, 0))
                             else:
                                 print(f"[ACCESS DENIED] Cannot process exit for {most_common}")
-                                log_unauthorized_exit(most_common)
+                                log_unauthorized_exit(most_common, message_queue)
                                 if arduino:
                                     arduino.write(b'2')  # Trigger warning buzzer
                                     print("[ALERT] Buzzer triggered (sent '2')")
+                                    message_queue.add_message("ALERT: Unauthorized exit", (0, 0, 255))
                                     time.sleep(3)  # Buzzer duration
                                     arduino.write(b'0')  # Stop buzzer
 
@@ -196,9 +274,23 @@ while True:
             cv2.imshow("Processed", thresh)
 
     annotated_frame = results[0].plot()
+    # Display all active messages
+    annotated_frame = display_messages(annotated_frame, message_queue)
+    
+    # Add system status
+    cv2.putText(
+        annotated_frame,
+        "System: ACTIVE",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 255, 0),
+        2,
+    )
     cv2.imshow("Exit Webcam Feed", annotated_frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
+        message_queue.add_message("System Shutting Down", (255, 165, 0))
         break
 
 cap.release()
