@@ -1,8 +1,11 @@
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import csv
 import os
 import random
+from utils.data_handler import update_vehicle_exit
+from sqlalchemy import get_db_connection
+from sqlalchemy import text
 
 class RFIDSimulator:
     """Simulates RFID card operations without physical hardware"""
@@ -248,6 +251,27 @@ class PaymentProcessor:
                         )
                         writer.writeheader()
                         writer.writerows(rows)
+
+                    # Update database with payment status only
+                    engine = get_db_connection()
+                    if engine is not None:
+                        query = text("""
+                            UPDATE vehicle_logs 
+                            SET status = 1
+                            WHERE plate_number = :plate_number 
+                            AND in_time = :in_time
+                            AND out_time IS NULL
+                        """)
+                        with engine.connect() as conn:
+                            conn.execute(query, {
+                                "plate_number": plate_number,
+                                "in_time": entry["In time"]
+                            })
+                            conn.commit()
+                            print("[DATABASE] Payment status updated in database")
+                    else:
+                        print("[ERROR] Failed to update payment status in database")
+
                 except Exception as e:
                     print(f"[CSV WRITE ERROR] {str(e)}")
                     return

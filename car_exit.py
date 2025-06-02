@@ -8,6 +8,8 @@ import serial.tools.list_ports
 import csv
 from collections import Counter
 from datetime import datetime
+from utils.data_handler import get_db_connection, update_vehicle_exit, save_vehicle_entry
+from sqlalchemy import create_engine, text
 
 # Load YOLOv8 model
 model = YOLO('./best.pt')
@@ -49,13 +51,42 @@ def process_exit(plate_number):
     for row in reversed(rows):
         if row['Plate Number'] == plate_number and row['Payment Status'] == '1' and not row['Out time']:
             # Update exit time
-            row['Out time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            current_time = datetime.now()
+            current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
+            row['Out time'] = current_time_str
             
             # Write back all rows
             with open(authorized_csv, 'w', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=['Plate Number', 'Payment Status', 'In time', 'Out time'])
                 writer.writeheader()
                 writer.writerows(rows)
+            
+            # Update database with out_time only
+            engine = get_db_connection()
+            if engine is not None:
+                query = text("""
+                    UPDATE vehicle_logs 
+                    SET out_time = :out_time
+                    WHERE plate_number = :plate_number 
+                    AND status = 1
+                    AND out_time IS NULL
+                    RETURNING id
+                """)
+                try:
+                    with engine.connect() as conn:
+                        result = conn.execute(query, {
+                            "plate_number": plate_number,
+                            "out_time": current_time
+                        })
+                        conn.commit()
+                        if result.rowcount > 0:
+                            print(f"[DATABASE] Exit time updated in database for {plate_number}")
+                        else:
+                            print(f"[DATABASE] No matching record found for {plate_number}")
+                except Exception as e:
+                    print(f"[DATABASE ERROR] Failed to update exit time: {str(e)}")
+            else:
+                print(f"[ERROR] Failed to connect to database for exit time update")
             
             print(f"[SUCCESS] Exit time updated for {plate_number}")
             return True
@@ -71,10 +102,32 @@ def log_unauthorized_exit(plate_number):
             writer = csv.writer(f)
             writer.writerow(['Plate Number', 'Timestamp'])
     
-    # Append new entry
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Append new entry to CSV
     with open(unauthorized_csv, 'a', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow([plate_number, datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+        writer.writerow([plate_number, current_time])
+    
+    # Log to database
+    engine = get_db_connection()
+    if engine is not None:
+        query = text("""
+            INSERT INTO unauthorized_exits (plate_number, timestamp)
+            VALUES (:plate_number, :timestamp)
+        """)
+        try:
+            with engine.connect() as conn:
+                conn.execute(query, {
+                    "plate_number": plate_number,
+                    "timestamp": current_time
+                })
+                conn.commit()
+                print(f"[DATABASE] Unauthorized exit logged in database for {plate_number}")
+        except Exception as e:
+            print(f"[DATABASE ERROR] Failed to log unauthorized exit: {str(e)}")
+    else:
+        print(f"[ERROR] Failed to connect to database for unauthorized exit logging")
     
     print(f"[SECURITY ALERT] Unauthorized exit logged for {plate_number}")
 

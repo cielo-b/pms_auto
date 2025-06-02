@@ -5,6 +5,10 @@ import time
 import os
 import plotly.express as px
 import plotly.graph_objects as go
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+import json
+from urllib.parse import quote_plus
 
 # Set page config
 st.set_page_config(
@@ -64,22 +68,71 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-def load_unauthorised():
+# Load database configuration
+def load_db_config():
     try:
-        unauthorised = pd.read_csv("database/unauthorized_exits.csv")
-        unauthorised['Timestamp'] = pd.to_datetime(unauthorised['Timestamp'])
+        with open('config/database.json', 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        st.error(f"Error loading database configuration: {str(e)}")
+        return None
+
+# Database connection
+def get_db_connection():
+    config = load_db_config()
+    if config is None:
+        return None
+    
+    try:
+        # URL encode the password to handle special characters
+        password = quote_plus(config['password'])
+        connection_string = f"postgresql://{config['user']}:{password}@{config['host']}:{config['port']}/{config['database']}"
+        engine = create_engine(connection_string)
+        return engine
+    except Exception as e:
+        st.error(f"Error connecting to database: {str(e)}")
+        return None
+
+def load_unauthorised():
+    """Load unauthorized exits from PostgreSQL database"""
+    try:
+        engine = get_db_connection()
+        if engine is None:
+            return None
+        
+        query = """
+        SELECT * FROM unauthorized_exits 
+        ORDER BY timestamp DESC
+        """
+        unauthorised = pd.read_sql(query, engine)
+        unauthorised['timestamp'] = pd.to_datetime(unauthorised['timestamp'])
         return unauthorised
     except Exception as e:
         st.error(f"Error loading unauthorised data: {str(e)}")
         return None
 
 def load_data():
-    """Load data from CSV files"""
+    """Load data from PostgreSQL database"""
     try:
-        plates_log = pd.read_csv("database/plates_log.csv")
-        plates_log["status"] = plates_log["Out time"].apply(
-            lambda x: "out" if pd.notna(x) and x != "" else "in"
-        )
+        engine = get_db_connection()
+        if engine is None:
+            return None
+        
+        query = """
+        SELECT 
+            plate_number as "Plate Number",
+            in_time as "In time",
+            out_time as "Out time",
+            CASE 
+                WHEN out_time IS NOT NULL THEN 'out'
+                ELSE 'in'
+            END as status
+        FROM vehicle_logs
+        ORDER BY in_time DESC
+        """
+        plates_log = pd.read_sql(query, engine)
+        
+        # Convert time columns to datetime
         plates_log["In time"] = pd.to_datetime(plates_log["In time"])
         plates_log["Out time"] = pd.to_datetime(plates_log["Out time"], errors='coerce')
         return plates_log
@@ -126,23 +179,23 @@ def main():
                 plates_log = load_data()
                 unauthorised = load_unauthorised()
 
-            if plates_log is not None:
-                # Calculate metrics
-                total_vehicles = len(plates_log)
-                current_vehicles = len(plates_log[plates_log["status"] == "in"])
-                unauthorized_exits = len(unauthorised) if unauthorised is not None else 0
-                plates_log["duration"] = plates_log.apply(calculate_duration, axis=1)
-                avg_duration = plates_log["duration"].mean()
+                if plates_log is not None:
+                    # Calculate metrics
+                    total_vehicles = len(plates_log)
+                    current_vehicles = len(plates_log[plates_log["status"] == "in"])
+                    unauthorized_exits = len(unauthorised) if unauthorised is not None else 0
+                    plates_log["duration"] = plates_log.apply(calculate_duration, axis=1)
+                    avg_duration = plates_log["duration"].mean()
 
-                with col1:
-                    delta = total_vehicles - len(plates_log[plates_log['In time'] < pd.Timestamp(date_range[0])])
-                    st.metric("Total Vehicles", total_vehicles, delta=f"{delta}", delta_color="normal")
-                with col2:
-                    st.metric("Current Vehicles", current_vehicles, delta_color="off")
-                with col3:
-                    st.metric("Unauthorized Exits", unauthorized_exits, delta_color="normal")
-                with col4:
-                    st.metric("Avg. Duration (hrs)", f"{avg_duration:.2f}", delta_color="off")
+                    with col1:
+                        delta = total_vehicles - len(plates_log[plates_log['In time'] < pd.Timestamp(date_range[0])])
+                        st.metric("Total Vehicles", total_vehicles, delta=f"{delta}", delta_color="normal")
+                    with col2:
+                        st.metric("Current Vehicles", current_vehicles, delta_color="off")
+                    with col3:
+                        st.metric("Unauthorized Exits", unauthorized_exits, delta_color="normal")
+                    with col4:
+                        st.metric("Avg. Duration (hrs)", f"{avg_duration:.2f}", delta_color="off")
             st.markdown('</div>', unsafe_allow_html=True)
 
             # Recent activity
@@ -171,14 +224,14 @@ def main():
             st.markdown('<div class="card">', unsafe_allow_html=True)
             if unauthorised is not None and not unauthorised.empty:
                 st.dataframe(unauthorised, use_container_width=True, height=350)
-                daily_counts = unauthorised.groupby(unauthorised['Timestamp'].dt.date).size().reset_index(name='count')
+                daily_counts = unauthorised.groupby(unauthorised['timestamp'].dt.date).size().reset_index(name='count')
                 fig = px.bar(
                     daily_counts,
-                    x='Timestamp',
+                    x='timestamp',
                     y='count',
                     title='Unauthorized Exits Over Time',
-                    labels={'Timestamp': 'Date', 'count': 'Number of Unauthorized Exits'},
-                    color_discrete_sequence=['#dc2626']  # Bright red
+                    labels={'timestamp': 'Date', 'count': 'Number of Unauthorized Exits'},
+                    color_discrete_sequence=['#dc2626']
                 )
                 fig.update_layout(
                     showlegend=False,
@@ -247,13 +300,18 @@ def main():
             if plates_log is not None:
                 col1, col2 = st.columns(2)
                 with col1:
-                    hourly_data = plates_log.groupby(plates_log['In time'].dt.hour).size()
+                    # Create hourly data DataFrame
+                    hourly_data = plates_log.groupby(plates_log['In time'].dt.hour).size().reset_index(name='count')
+                    hourly_data.columns = ['hour', 'count']
+                    
+                    # Create line plot
                     fig1 = px.line(
-                        x=hourly_data.index,
-                        y=hourly_data.values,
+                        hourly_data,
+                        x='hour',
+                        y='count',
                         title='Vehicle Occupancy by Hour',
-                        labels={'x': 'Hour of Day', 'y': 'Number of Vehicles'},
-                        color_discrete_sequence=['#2563eb']  # Bright blue
+                        labels={'hour': 'Hour of Day', 'count': 'Number of Vehicles'},
+                        color_discrete_sequence=['#2563eb']
                     )
                     fig1.update_layout(
                         showlegend=False,
@@ -262,7 +320,10 @@ def main():
                         paper_bgcolor='white',
                         xaxis=dict(
                             gridcolor='#e5e7eb',
-                            showgrid=True
+                            showgrid=True,
+                            tickmode='linear',
+                            tick0=0,
+                            dtick=1
                         ),
                         yaxis=dict(
                             gridcolor='#e5e7eb',
@@ -277,7 +338,7 @@ def main():
                         x='duration',
                         title='Parking Duration Distribution',
                         labels={'duration': 'Duration (hours)', 'count': 'Count'},
-                        color_discrete_sequence=['#059669']  # Emerald green
+                        color_discrete_sequence=['#059669']
                     )
                     fig2.update_layout(
                         showlegend=False,
@@ -297,15 +358,27 @@ def main():
 
                 st.subheader("Key Performance Indicators")
                 col1, col2, col3 = st.columns(3)
+                
                 with col1:
-                    peak_hour = hourly_data.idxmax()
-                    st.metric("Peak Hour", f"{peak_hour:02d}:00")
+                    if not hourly_data.empty:
+                        peak_hour = hourly_data.loc[hourly_data['count'].idxmax(), 'hour']
+                        st.metric("Peak Hour", f"{peak_hour:02d}:00")
+                    else:
+                        st.metric("Peak Hour", "No data")
+                
                 with col2:
-                    avg_daily_vehicles = len(plates_log) / max((date_range[1] - date_range[0]).days, 1)
-                    st.metric("Avg. Daily Vehicles", f"{avg_daily_vehicles:.1f}")
+                    if not plates_log.empty:
+                        avg_daily_vehicles = len(plates_log) / max((date_range[1] - date_range[0]).days, 1)
+                        st.metric("Avg. Daily Vehicles", f"{avg_daily_vehicles:.1f}")
+                    else:
+                        st.metric("Avg. Daily Vehicles", "No data")
+                
                 with col3:
-                    occupancy_rate = (current_vehicles / total_vehicles) * 100 if total_vehicles > 0 else 0
-                    st.metric("Current Occupancy Rate", f"{occupancy_rate:.1f}%")
+                    if not plates_log.empty and total_vehicles > 0:
+                        occupancy_rate = (current_vehicles / total_vehicles) * 100
+                        st.metric("Current Occupancy Rate", f"{occupancy_rate:.1f}%")
+                    else:
+                        st.metric("Current Occupancy Rate", "No data")
             st.markdown('</div>', unsafe_allow_html=True)
 
     # Auto-refresh logic

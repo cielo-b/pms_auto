@@ -9,6 +9,7 @@ import csv
 from collections import Counter
 import numpy as np
 import random
+from utils.data_handler import save_vehicle_entry, update_vehicle_exit
 
 # ===== Configuration =====
 CONFIG = {
@@ -202,18 +203,25 @@ def main():
                                     # > CONFIG["entry_cooldown"]
                                     1==1
                                 ):
-                                    # Log to CSV
+                                    # Log to CSV and Database
+                                    current_time = time.strftime("%Y-%m-%d %H:%M:%S")
                                     with open(CONFIG["csv_file"], "a", newline="") as f:
                                         writer = csv.writer(f)
                                         writer.writerow(
                                             [
                                                 most_common,
                                                 "0",  # Payment Status
-                                                time.strftime("%Y-%m-%d %H:%M:%S"),
+                                                current_time,
                                                 "",
                                             ]
                                         )
                                     print(f"[SAVED] Plate: {most_common} logged to CSV")
+
+                                    # Log to database
+                                    if save_vehicle_entry(most_common):
+                                        print(f"[SAVED] Plate: {most_common} logged to database")
+                                    else:
+                                        print(f"[ERROR] Failed to log plate: {most_common} to database")
 
                                     # Control gate
                                     if arduino:
