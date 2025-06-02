@@ -3,5 +3,8 @@
 /plates
 /dataset-new
 /__pycache__
-/.vscode
 /.qodo
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore
+branch_structure.json
