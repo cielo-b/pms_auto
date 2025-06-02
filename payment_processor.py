@@ -1,96 +1,31 @@
+from rfid_manager import RFIDManager
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import csv
 import os
-import random
-from utils.data_handler import update_vehicle_exit
-from sqlalchemy import get_db_connection
 from sqlalchemy import text
-
-class RFIDSimulator:
-    """Simulates RFID card operations without physical hardware"""
-    def __init__(self):
-        self.simulated_cards = {}  # Stores card data in memory
-        
-    def wait_for_card(self, timeout):
-        """Simulates waiting for a card to be presented"""
-        print("\n[Simulation] Present a card:")
-        print("1. Use existing test card")
-        print("2. Create new test card")
-        print("3. Cancel (timeout)")
-        
-        choice = input("Select option (1-3): ").strip()
-        if choice == "1":
-            if not self.simulated_cards:
-                print("No cards registered yet")
-                return None
-            print("\nAvailable cards:")
-            for i, card_id in enumerate(self.simulated_cards.keys(), 1):
-                print(f"{i}. {card_id}")
-            card_choice = input("Select card (1-{}): ".format(len(self.simulated_cards))).strip()
-            try:
-                card_index = int(card_choice) - 1
-                return list(self.simulated_cards.keys())[card_index]
-            except (ValueError, IndexError):
-                print("Invalid selection")
-                return None
-        elif choice == "2":
-            card_id = "CARD-" + str(random.randint(1000, 9999))
-            plate = "ABC-" + str(random.randint(100, 999))
-            balance = round(random.uniform(50, 500), 2)
-            self.simulated_cards[card_id] = {
-                "Plate Number": plate,
-                "Balance": balance
-            }
-            print(f"Created new test card: {card_id}")
-            print(f"Plate: {plate}, Balance: {balance}")
-            return card_id
-        else:
-            print("No card detected (simulated timeout)")
-            return None
-    
-    def write_rfid(self, card_id, plate_number, balance):
-        """Simulates writing data to an RFID card"""
-        if card_id in self.simulated_cards:
-            self.simulated_cards[card_id] = {
-                "Plate Number": plate_number,
-                "Balance": balance
-            }
-            return True
-        return False
-    
-    def read_rfid(self, card_id):
-        """Simulates reading data from an RFID card"""
-        return self.simulated_cards.get(card_id, None)
+from utils.data_handler import get_db_connection
 
 
 class PaymentProcessor:
     def __init__(self):
-        self.rfid = RFIDSimulator()  # Using the simulator instead of real RFIDManager
+        self.rfid = RFIDManager()
         self.cards_csv = "./database/cards.csv"
-        self.plates_csv = "./database/plates_log.csv"
-        self.parking_rate = 500  # 500 per hour
-        self.initialize_files()
-        
-    def initialize_files(self):
-        """Initialize required files if they don't exist"""
-        os.makedirs("./database", exist_ok=True)
-        
-        # Initialize cards.csv
+        self.plates_csv = "./database/plates_log.csv"  # From car_entry.py
+        self.parking_rate = 200  # 200 per hour
+        self.minimum_charge = 500  # Minimum charge for under 1 hour
+        self.initialize_cards_csv()
+
+    def initialize_cards_csv(self):
+        """Initialize cards.csv if it doesn't exist"""
         if not os.path.exists(self.cards_csv):
             with open(self.cards_csv, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(["Card ID", "Plate Number", "Balance"])
-        
-        # Initialize plates_log.csv
-        if not os.path.exists(self.plates_csv):
-            with open(self.plates_csv, "w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(["Plate Number", "Payment Status", "In time", "Out time"])
 
     def register_card(self):
         """Register a new card"""
-        print("\n[Register Card] Waiting for card...")
+        print("\nWaiting for card...")
         card_id = self.rfid.wait_for_card(10)
         if not card_id:
             print("No card detected within time limit")
@@ -121,7 +56,7 @@ class PaymentProcessor:
 
     def topup_balance(self):
         """Top up card balance"""
-        print("\n[Top Up] Waiting for card...")
+        print("\nWaiting for card...")
         card_id = self.rfid.wait_for_card(10)
         if not card_id:
             print("No card detected within time limit")
@@ -136,6 +71,9 @@ class PaymentProcessor:
         print(f"Current Balance: {card_data['Balance']}")
         try:
             amount = float(input("Enter top-up amount: "))
+            if amount <= 0:
+                print("Invalid amount entered")
+                return
             new_balance = float(card_data["Balance"]) + amount
 
             if self.rfid.write_rfid(card_id, card_data["Plate Number"], new_balance):
@@ -148,7 +86,7 @@ class PaymentProcessor:
 
     def check_card(self):
         """Check card details"""
-        print("\n[Check Card] Waiting for card...")
+        print("\nWaiting for card...")
         card_id = self.rfid.wait_for_card(10)
         if not card_id:
             print("No card detected within time limit")
@@ -165,7 +103,7 @@ class PaymentProcessor:
 
     def process_exit(self):
         """Process parking exit and payment (without updating Out time)"""
-        print("\n[Process Exit] Waiting for card...")
+        print("\nWaiting for card...")
         card_id = self.rfid.wait_for_card(10)
         if not card_id:
             print("No card detected within time limit")
@@ -179,16 +117,17 @@ class PaymentProcessor:
         plate_number = card_data["Plate Number"]
         balance = float(card_data["Balance"])
 
-        # Simulate finding an active parking session
-        print(f"\nLooking for active parking session for plate: {plate_number}")
-        
-        # Create a simulated entry if none exists
+        # Find the latest entry in plates_log.csv with no Out time
         entry = None
         try:
             with open(self.plates_csv, "r") as f:
                 reader = csv.DictReader(f)
                 for row in reversed(list(reader)):
                     if row["Plate Number"] == plate_number and not row["Out time"]:
+                        # Check if payment status is already 1
+                        if row["Payment Status"] == "1":
+                            print("This vehicle has already paid for parking!")
+                            return
                         entry = row
                         break
         except Exception as e:
@@ -196,30 +135,20 @@ class PaymentProcessor:
             return
 
         if not entry:
-            print("No active parking session found. Creating a simulated one...")
-            entry_time = datetime.now() - timedelta(minutes=random.randint(30, 180))
-            entry = {
-                "Plate Number": plate_number,
-                "Payment Status": "0",
-                "In time": entry_time.strftime("%Y-%m-%d %H:%M:%S"),
-                "Out time": ""
-            }
-            # Add to log
-            with open(self.plates_csv, "a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=entry.keys())
-                writer.writerow(entry)
-            print(f"Created simulated entry at {entry['In time']}")
+            print("No active parking session for this plate")
+            return
 
         # Calculate fee
         current_time = datetime.now()
         entry_time = datetime.strptime(entry["In time"], "%Y-%m-%d %H:%M:%S")
         duration_hours = (current_time - entry_time).total_seconds() / 3600
-        fee = duration_hours * self.parking_rate
+        
+        # Apply minimum charge for durations under 1 hour
+        if duration_hours < 1:
+            fee = self.minimum_charge
+        else:
+            fee = duration_hours * self.parking_rate
         fee = round(fee, 2)
-
-        print(f"\nParking Duration: {duration_hours*60:.1f} minutes")
-        print(f"Parking Fee: {fee:.2f}")
-        print(f"Current Balance: {balance:.2f}")
 
         if balance >= fee:
             new_balance = round(balance - fee, 2)
@@ -227,18 +156,26 @@ class PaymentProcessor:
                 # Update cards.csv with new balance
                 self.log_transaction(card_id, plate_number, new_balance)
 
-                # Update plates_log.csv with Payment Status=1 (do NOT update Out time)
+                # Update plates_log.csv with Payment Status=1
                 try:
                     rows = []
                     with open(self.plates_csv, "r") as f:
                         reader = csv.DictReader(f)
                         rows = list(reader)
+                    
+                    updated = False
                     for row in rows:
-                        if (
-                            row["Plate Number"] == plate_number
-                            and row["In time"] == entry["In time"]
-                        ):
+                        if (row["Plate Number"] == plate_number and 
+                            row["In time"] == entry["In time"] and 
+                            row["Payment Status"] == "0"):
                             row["Payment Status"] = "1"
+                            updated = True
+                            break
+                    
+                    if not updated:
+                        print("Error: Could not find matching entry to update")
+                        return
+
                     with open(self.plates_csv, "w", newline="") as f:
                         writer = csv.DictWriter(
                             f,
@@ -252,31 +189,39 @@ class PaymentProcessor:
                         writer.writeheader()
                         writer.writerows(rows)
 
-                    # Update database with payment status only
+                    # Update database
                     engine = get_db_connection()
                     if engine is not None:
-                        query = text("""
+                        query = text(
+                            """
                             UPDATE vehicle_logs 
                             SET status = 1
                             WHERE plate_number = :plate_number 
-                            AND in_time = :in_time
-                            AND out_time IS NULL
-                        """)
+                            AND status = 0
+                        """
+                        )
                         with engine.connect() as conn:
-                            conn.execute(query, {
-                                "plate_number": plate_number,
-                                "in_time": entry["In time"]
-                            })
+                            result = conn.execute(
+                                query,
+                                {
+                                    "plate_number": plate_number,
+                                },
+                            )
                             conn.commit()
-                            print("[DATABASE] Payment status updated in database")
+                            if result.rowcount > 0:
+                                print("[DATABASE] Payment status updated in database")
+                            else:
+                                print("[ERROR] No matching record found in database")
                     else:
-                        print("[ERROR] Failed to update payment status in database")
+                        print("[ERROR] Failed to connect to database")
 
                 except Exception as e:
                     print(f"[CSV WRITE ERROR] {str(e)}")
                     return
 
                 print("\nPayment successful!")
+                print(f"Duration: {(current_time - entry_time).total_seconds() / 60:.1f} min")
+                print(f"Fee: {fee:.2f}")
                 print(f"New Balance: {new_balance:.2f}")
             else:
                 print("Failed to update card balance")
@@ -284,13 +229,7 @@ class PaymentProcessor:
             print(f"Insufficient balance (Need: {fee:.2f}, Has: {balance:.2f})")
 
     def get_card_data(self, card_id):
-        """Retrieve card data from cards.csv and simulated cards"""
-        # First check the simulated cards
-        sim_data = self.rfid.read_rfid(card_id)
-        if sim_data:
-            return sim_data
-        
-        # Then check the CSV file
+        """Retrieve card data from cards.csv"""
         try:
             with open(self.cards_csv, "r") as f:
                 reader = csv.DictReader(f)
@@ -337,7 +276,7 @@ class PaymentProcessor:
 
     def show_menu(self):
         """Display main menu"""
-        print("\n=== Parking Management System (Simulation) ===")
+        print("\n=== Parking Management System ===")
         print("1. Register New Card")
         print("2. Top Up Balance")
         print("3. Check Card Details")
