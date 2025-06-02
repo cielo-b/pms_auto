@@ -9,17 +9,18 @@ import csv
 from collections import Counter
 from datetime import datetime
 
-# Load YOLOv8 model (same model as entry)
+# Load YOLOv8 model
 model = YOLO('./best.pt')
 
-# CSV log file
-csv_file = './database/plates_log.csv'
+# CSV log files
+authorized_csv = './database/plates_log.csv'
+unauthorized_csv = './database/unauthorized_exits.csv'
 
 # ===== Auto-detect Arduino Serial Port =====
 def detect_arduino_port():
     ports = list(serial.tools.list_ports.comports())
     for port in ports:
-        if "ttyUSB" in port.device or "ttyACM" in port.device:
+        if "ttyUSB" in port.device or "ttyACM0" in port.device:
             return port.device
     return None
 
@@ -34,24 +35,24 @@ else:
 
 # ===== Check payment status and update exit time =====
 def process_exit(plate_number):
-    if not os.path.exists(csv_file):
+    if not os.path.exists(authorized_csv):
         print("[ERROR] Log file does not exist.")
         return False
 
     # Read all rows
     rows = []
-    with open(csv_file, 'r') as f:
+    with open(authorized_csv, 'r') as f:
         reader = csv.DictReader(f)
         rows = list(reader)
 
     # Find the latest entry for this plate that hasn't exited
     for row in reversed(rows):
-        if row['Plate Number'] == plate_number and row['Payment Status'] == '1':
+        if row['Plate Number'] == plate_number and row['Payment Status'] == '1' and not row['Out time']:
             # Update exit time
             row['Out time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             # Write back all rows
-            with open(csv_file, 'w', newline='') as f:
+            with open(authorized_csv, 'w', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=['Plate Number', 'Payment Status', 'In time', 'Out time'])
                 writer.writeheader()
                 writer.writerows(rows)
@@ -61,6 +62,21 @@ def process_exit(plate_number):
 
     print(f"[ERROR] No valid entry found for {plate_number}")
     return False
+
+# ===== Log unauthorized exit =====
+def log_unauthorized_exit(plate_number):
+    # Create file if it doesn't exist
+    if not os.path.exists(unauthorized_csv):
+        with open(unauthorized_csv, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Plate Number', 'Timestamp'])
+    
+    # Append new entry
+    with open(unauthorized_csv, 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([plate_number, datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+    
+    print(f"[SECURITY ALERT] Unauthorized exit logged for {plate_number}")
 
 # ===== Webcam and Main Loop =====
 cap = cv2.VideoCapture(0)
@@ -116,9 +132,12 @@ while True:
                                     print("[GATE] Closing gate (sent '0')")
                             else:
                                 print(f"[ACCESS DENIED] Cannot process exit for {most_common}")
+                                log_unauthorized_exit(most_common)
                                 if arduino:
                                     arduino.write(b'2')  # Trigger warning buzzer
                                     print("[ALERT] Buzzer triggered (sent '2')")
+                                    time.sleep(3)  # Buzzer duration
+                                    arduino.write(b'0')  # Stop buzzer
 
             cv2.imshow("Plate", plate_img)
             cv2.imshow("Processed", thresh)

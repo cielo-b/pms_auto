@@ -51,7 +51,8 @@ def initialize_system():
 def connect_arduino():
     ports = list(serial.tools.list_ports.comports())
     for port in ports:
-        if "ttyUSB" in port.device or "ttyACM" in port.device:
+        print(port.device)
+        if "ttyUSB" in port.device or "ttyACM0" in port.device:
             try:
                 arduino = serial.Serial(
                     port.device, CONFIG["arduino_baudrate"], timeout=1
